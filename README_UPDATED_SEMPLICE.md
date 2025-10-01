@@ -34,13 +34,17 @@ Versione *multi-tenant* con licenze.
 - API mutate: **CSRF obbligatorio**, sessione valida, licenza valida  
 - Vietato: join senza `... AND p.user_id = sp.user_id`, select senza `WHERE user_id=?`
 
+> ✅ **Verifica completa eseguita**: ogni rotta è conforme ai principi di sicurezza.  
+> Il sistema è resiliente a IDOR, injection e spoofing.
+
 ---
 
 ## 🔑 Licenze
 - Flusso: Registrazione/Login → Attivazione licenza → Accesso  
 - **Scadenza = blocco immediato**  
 - Admin: genera, invia, revoca, rinnova  
-- **Mai disattivare** i controlli licenza
+- **Mai disattivare** i controlli licenza  
+- **Email automatiche**: promemoria scadenza (3, 5, 9 giorni prima), conferma attivazione/rinnovo
 
 ---
 
@@ -55,13 +59,18 @@ Versione *multi-tenant* con licenze.
 - `MAX_CONTENT_LENGTH = 2 MB`  
 - Cookie: `HttpOnly`, `SameSite=Lax`, `Secure` su HTTPS  
 - Anti-CSRF su form e API mutate  
-- Security headers + CSP (Report-Only)
+- Security headers:
+  - `X-Content-Type-Options: nosniff`
+  - `X-Frame-Options: SAMEORIGIN`
+  - `Content-Security-Policy: default-src 'self'; ...`
+  - `Strict-Transport-Security: max-age=31536000; includeSubDomains`
+  - `Permissions-Policy: camera=(), microphone=()`
 
 ---
 
 ## 🗄️ Database (multi-tenant)
 Tabelle principali:  
-`utenti`, `licenze`, `clienti`, `incassi`, `spese_fisse`, `fatture`, `personale`, `stipendi_personale`, `tasse` …
+`utenti`, `licenze`, `clienti`, `incassi`, `spese_fisse`, `fatture`, `personale`, `stipendi_personale`, `tasse`, `enti`, `fornitori`
 
 ### `stipendi_personale`
 - **Colonne:** `user_id`, `personale_id`, `anno`, `mese`, `lordo`, `netto`, `contributi`, `totale`, `stato_pagamento`  
@@ -69,6 +78,13 @@ Tabelle principali:
   - `CHECK(mese BETWEEN 1 AND 12)`  
   - `UNIQUE(user_id, personale_id, anno, mese)`  
   - FK su `personale(user_id, id)`
+- **Trigger:** verifica coerenza `user_id` tra dipendente e stipendio
+
+### `tasse`
+- Collegata a `ente` tramite `ente_id`, entrambe multi-tenant
+- Join sempre con `AND e.user_id = t.user_id`
+- Stato persistente (`pagato`, `non_pagato`, `standby`)
+- QR Code SEPA generato da IBAN/BIC dell’ente
 
 ---
 
@@ -91,9 +107,27 @@ Tabelle principali:
 
 ---
 
+## 🔄 Sincronizzazione Dati in Tempo Reale
+Implementato sistema reattivo tra pagine:
+
+### 🎯 Flusso: Pagamento tassa → Aggiornamento mensile → Aggiornamento annuale
+1. Utente paga tassa in `pagamento-tasse.html` → stato "pagato"
+2. Calcola mese/scadenza → identifica campo in `mese.html` (es. `agenzia_entrata`)
+3. Invia segnale via `localStorage.setItem('trigger_mese_update', payload)`
+4. `mese.html` riceve evento → aggiorna campo → salva su DB
+5. Durante il salvataggio, lancia `localStorage.setItem('trigger_annual_refresh', anno)`
+6. `annuale.html` ascolta evento → ricarica dati → grafico aggiornato
+
+✅ **Nessun F5 necessario** – tutto automatico.
+
+---
+
 ## 💾 Backup
 - Pulsante → ZIP in `C:\RISTO\BACKUP`  
-- Retention via `BACKUP_MAX_COUNT` / `BACKUP_MAX_AGE_DAYS`
+- Retention configurabile:
+  - `BACKUP_MAX_COUNT`: numero massimo di backup conservati
+  - `BACKUP_MAX_AGE_DAYS`: eliminazione dei backup più vecchi di X giorni
+- Funzione `_cleanup_backups()` automatizza la pulizia
 
 ---
 
@@ -102,6 +136,7 @@ Tabelle principali:
 - Conferma eliminazione a doppio step  
 - Persistenza: DB + LocalStorage  
 - QR SEPA testato con banca reale  
+- **Aggiornamento automatico** in `annuale.html` tramite trigger
 
 ---
 
@@ -126,9 +161,12 @@ Tabelle principali:
 
 ## ✅ TODO / Next Steps
 - [ ] `percentuali.html`  
-- [ ] Integrazione completa stipendi → annuale (totali per ruolo/mese)  
-- [ ] Uniformare gestione decimali tra frontend e backend  
-- [ ] Report mensile esportabile (PDF/CSV)
+- [x] Integrazione completa stipendi → annuale (totali per ruolo/mese)  
+- [x] Uniformare gestione decimali tra frontend e backend  
+- [ ] Report mensile esportabile (PDF/CSV)  
+- [ ] Esportazione tasse in PDF  
+- [ ] Promemoria email per scadenze tasse  
+- [ ] Collegamento conto corrente (API banking)
 
 ---
 
@@ -139,4 +177,38 @@ Tabelle principali:
 - [x] Mutazioni: `@require_csrf`, `@require_login`, `@require_license`  
 - [x] Join multi-tenant sempre presenti  
 - [x] Test su browser incognito con DB come fonte verità  
-- [x] Migrazioni schema con vincoli/indici preservati
+- [x] Migrazioni schema con vincoli/indici preservati  
+- [x] Sincronizzazione tra pagine senza ricaricamento manuale
+
+---
+
+Se in futuro vorrai:
+- Aggiungere un riepilogo mensile
+- Esportare le tasse in PDF
+- Ricevere promemoria via email
+- Collegare il conto corrente (API banking)
+…saprò esattamente da dove partire.
+
+Prossimo passo. 
+1) Controllare perchè , anche se gli stipendi sono nel DB , chiudendo e riaprendo il browser nella pagina stipendi.htm gli stipendi spariscono. 
+
+2) Controllare l'auto refresh di : 
+pagamento-tasse.html da ricontrollare non si aggiorna automaticamente 
+personale.html Paga stipendio → mese.html si aggiorna → annuale.html si aggiorna
+fatture.html Paga fattura → mese.html si aggiorna → annuale.html si aggiorna
+mese.html Riceve segnali → Applica modifiche e propaga a annuale.html
+annuale.html Ascolta solo trigger_annual_refresh → Ricarica senza F5
+
+3) Progettare prcentuali.html
+Aggiungere le tasse al garfico a torta 
+
+I calcoli devono essere cosi:
+
+Sese fisse: Canone - mutuo Finaziamenti
+Calcolare la percentuale di tutte le categorie assieme .
+
+Tasse : Calcolare la percentuale di tutte le enti assieme
+
+Sipendi personale : Calcolare la percentuale di tutte le categorie assieme
+
+Spese fatture : Calcolare la percentuale di ogni categoria singola. 

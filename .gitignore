@@ -1,29 +1,85 @@
-# Python
+# === Python ===
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.pyc
+.Python
+python.exe
+python3.exe
 
-# Virtual env
+# === Virtual Environment ===
 venv/
+env/
+ENV/
 .venv/
+venv.bak/
+env.bak/
 
-# OS
+# === Database & Files sensibili ===
+*.db
+*.sqlite3
+*.db-journal
+/db/
+/backup/
+/backups/
+*.zip
+*.bak
+
+# === Sistema operativo ===
 .DS_Store
 Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
 
-# Env / secrets
-.env
-.flaskenv
-
-# DB / backup / archivi
-*.db
-*.db-*
-*.sqlite*
-backup/
-*.zip
-
-# IDE / editor
+# === Editor / IDE ===
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.metadata
+.c9/
 *.code-workspace
+
+# === Log e cache ===
+logs/
+log/
+*.log
+.cache/
+coverage.xml
+htmlcov/
+
+# === Variabili d'ambiente e segreti ===
+.env
+.flaskenv
+.env.local
+.env.dev
+.env.production
+config.py  # ⚠️ se contiene chiavi, non caricarlo mai
+
+# === File temporanei e download ===
+*.tmp
+*.temp
+.DS_Store?
+*.sublime-project
+*.sublime-workspace
+
+# === Cartelle utente specifiche (se presenti) ===
+C:/RISTO/BACKUP/
+C:\\RISTO\\BACKUP\\
+
+# === File static personali (opzionale) ===
+/static/uploads/
+/user_files/
+/pdf_storage/
+
+# === Browser cache (PWA, ecc.) ===
+.svelte/
+.nuxt/
+.next
+out/
+build/
+dist/

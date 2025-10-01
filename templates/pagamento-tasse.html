@@ -551,6 +551,51 @@ document.addEventListener("DOMContentLoaded", async () => {
           if (oldTr) oldTr.remove();
 
           mostraToast("✅ Pagamento confermato");
+
+          // ✅ CALCOLA IN QUALE MESE DEVE ESSERE REGISTRATA LA SPESA
+          const meseScadenza = t.scadenza || t.data_inserimento;
+          const [anno, mese] = meseScadenza.split('-'); // es. "2025-01-15" → ["2025", "01"]
+          const nomeMese = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
+                            "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre"][parseInt(mese)-1];
+
+          // ✅ ID DEL CAMPO NEL MESE.HTML (es. #agenzia_entrata)
+          const idSpesa = t.ente_id?.toString(); 
+          const mappaEnti = {
+            "1": "agenzia_entrata",     // Agenzia delle Entrate
+            "2": "inps",                // INPS
+            "3": "inail",               // INAIL
+            "4": "camera_commercio",    // Camera di Commercio
+            "5": "siae",                // SIAE
+            "6": "adm",                 // ADM
+            "7": "asl",                 // ASL
+            "8": "comune"               // Comune
+          };
+          const campoId = mappaEnti[idSpesa] || null;
+
+          if (!campoId) {
+            console.warn("Nessun campo associato per l'ente ID:", idSpesa);
+          } else {
+            // ✅ INVIA DATO A MESE.HTML ATTRAVERSO localStorage + EVENTO
+            try {
+              const payload = {
+                tipo: "tassa_pagata",
+                anno: anno,
+                mese: nomeMese,
+                campo: campoId,
+                importo: parseFloat(t.importo),
+                timestamp: Date.now()
+              };
+
+              // Invia segnale a mese.html
+              localStorage.removeItem('trigger_mese_update');
+              localStorage.setItem('trigger_mese_update', JSON.stringify(payload));
+              setTimeout(() => localStorage.removeItem('trigger_mese_update'), 100);
+
+              console.log("[tasse] Trigger inviato a mese.html:", payload);
+            } catch (e) {
+              console.warn("Impossibile inviare aggiornamento a mese.html", e);
+            }
+          }
           
           popup.style.display = "none";
           

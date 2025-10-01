@@ -1104,9 +1104,62 @@ def mese_html(anno, mese):
     spese = {r["categoria"]: float(r["valore"]) for r in cur.fetchall()}
     tot_spese = sum(spese.values())
 
-    conn.close()
-
+    # --- Calcola ricavo PRIMA di caricare le tasse ---
     ricavo = tot_incassi - tot_spese
+
+    # --- CARICA TASSE PER MESE ---
+    # Mappa gli enti ai campi nel template 'mese.html'
+    ente_to_id = {
+        'agenzia delle entrate': 'agenzia_entrata',
+        'inps': 'inps',
+        'inail': 'inail',
+        'camera di commercio (unioncamere)': 'camera_commercio',
+        'siae': 'siae',
+        'agenzia delle dogane e monopoli (adm)': 'adm',
+        'asl': 'asl',
+        'comune': 'comune'
+    }
+
+    # Inizializza tutti i campi tasse a zero
+    for field_id in ente_to_id.values():
+        spese[field_id] = 0.0
+
+    # Estrai anno e mese numerico dal mese testuale
+    mese_num = mesi.index(mese_norm) + 1  # gennaio=1, ..., settembre=9
+
+    # Carica le tasse dove data_inserimento appartiene all'anno e al mese richiesto
+    cur.execute("""
+        SELECT 
+            e.nome AS ente_nome,
+            t.importo
+        FROM tasse t
+        JOIN ente e ON t.ente_id = e.id AND e.user_id = t.user_id
+        WHERE t.user_id = ?
+        AND CAST(strftime('%Y', t.data_inserimento) AS INTEGER) = ?
+        AND CAST(strftime('%m', t.data_inserimento) AS INTEGER) = ?
+    """, (uid, anno, mese_num))
+
+    # [Opzionale] Log: stampa i nomi degli enti trovati (utile per debug)
+    app.logger.info(f"[DEBUG] Enti trovati per {anno}-{mese_norm}:")
+    for row in cur.fetchall():
+        ente_nome_raw = row['ente_nome']
+        importo = float(row['importo']) if row['importo'] else 0.0
+
+        # Normalizza: trim + lower
+        ente_nome = ente_nome_raw.strip().lower()
+
+        app.logger.info(f"  - '{ente_nome_raw}' → normalizzato → '{ente_nome}'")
+
+        # Cerca il campo corrispondente
+        field_id = ente_to_id.get(ente_nome)
+        if field_id:
+            spese[field_id] += importo
+            app.logger.info(f"    ✓ Matchato con campo: {field_id} → valore aggiunto: {importo}")
+        else:
+            app.logger.warning(f"    ✗ Nessun match per: '{ente_nome}'")
+    # --- FINE CARICAMENTO TASSE ---
+
+    conn.close()
 
     return render_template(
         "mese.html",
@@ -4422,7 +4475,6 @@ def gestione_personale():
         anno = _get_selected_year()
     return render_template("personale.html", anno=anno)
 
-
 @app.route("/stipendi")
 @require_login
 @require_license
@@ -4432,8 +4484,47 @@ def stipendi():
         _set_selected_year(anno)
     else:
         anno = _get_selected_year()
-    return render_template("stipendi.html", anno=anno)
 
+    uid = _uid()
+    stipendi_data = {}
+
+    with get_db() as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        rows = cur.execute("""
+            SELECT sp.personale_id, p.nome, p.ruolo, sp.mese, sp.lordo, sp.netto,
+                   sp.contributi, sp.totale, sp.stato_pagamento
+            FROM stipendi_personale sp
+            JOIN personale p ON p.id = sp.personale_id AND p.user_id = sp.user_id
+            WHERE sp.user_id = ? AND sp.anno = ?
+        """, (uid, anno)).fetchall()
+
+    for r in rows:
+        pid = str(r["personale_id"])
+        mese_num = int(r["mese"])
+        # Converti numero mese → slug (es. 1 → "gennaio")
+        mese_slug = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
+                     "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre"][mese_num - 1]
+
+        rec = stipendi_data.setdefault(pid, {
+            "id": r["personale_id"],
+            "nome": r["nome"],
+            "ruolo": r["ruolo"],
+            "mesi": {}
+        })
+        rec["mesi"][mese_slug] = {
+            "lordo": float(r["lordo"] or 0.0),
+            "netto": float(r["netto"] or 0.0),
+            "contributi": float(r["contributi"] or 0.0),
+            "totale": float(r["totale"] or 0.0),
+            "pagato": (r["stato_pagamento"] == "pagato")
+        }
+
+    return render_template(
+        "stipendi.html",
+        anno=anno,
+        stipendi_data=stipendi_data  # 👈 Passato a Jinja2
+    )
 
 @app.route("/fornitori")
 @require_login
@@ -4511,39 +4602,54 @@ def api_annuale(anno):
     dati = []
     tot_inc = tot_spe = 0.0
 
+    # Incassi, spese fisse, stipendi, fatture e tasse per ogni mese
     for m in mesi:
-        # Incassi
+        # 1. Incassi
         inc = db.execute("""
-            SELECT COALESCE(SUM(valore),0)
+            SELECT COALESCE(SUM(valore), 0)
             FROM incassi
-            WHERE user_id=? AND anno=? AND mese=?
-        """, (uid, anno, m)).fetchone()[0] or 0.0
+            WHERE user_id=? AND anno=? AND LOWER(mese)=?
+        """, (uid, anno, m.lower())).fetchone()[0] or 0.0
 
-        # Spese fisse
+        # 2. Spese Fisse
         spese_fisse = db.execute("""
-            SELECT COALESCE(SUM(valore),0)
+            SELECT COALESCE(SUM(valore), 0)
             FROM spese_fisse
-            WHERE user_id=? AND anno=? AND mese=?
-        """, (uid, anno, m)).fetchone()[0] or 0.0
+            WHERE user_id=? AND anno=? AND LOWER(mese)=?
+        """, (uid, anno, m.lower())).fetchone()[0] or 0.0
 
-        # Stipendi
+                # 3. Stipendi (lordo)
         try:
+            mese_num = mesi.index(m) + 1  # gennaio=1, ..., ottobre=10
             stipendi = db.execute("""
-                SELECT COALESCE(SUM(lordo),0)
-                FROM stipendi_mensili
-                WHERE user_id=? AND strftime('%Y', mese)=? AND lower(strftime('%m', mese))=?
-            """, (uid, str(anno), f"{mesi.index(m)+1:02d}")).fetchone()[0] or 0.0
-        except Exception:
+                SELECT COALESCE(SUM(lordo), 0)
+                FROM stipendi_personale
+                WHERE user_id=? AND anno=? AND mese=?
+            """, (uid, anno, mese_num)).fetchone()[0] or 0.0
+        except Exception as e:
+            app.logger.warning(f"Errore lettura stipendi per {m} {anno}: {e}")
             stipendi = 0.0
 
-        # Fatture
+        # 4. Spese Fatture
         fatture = db.execute("""
-            SELECT COALESCE(SUM(importo),0)
+            SELECT COALESCE(SUM(importo), 0)
             FROM fatture
-            WHERE user_id=? AND strftime('%Y', data_inserimento)=? AND strftime('%m', data_inserimento)=?
-        """, (uid, str(anno), f"{mesi.index(m)+1:02d}")).fetchone()[0] or 0.0
+            WHERE user_id=? AND CAST(strftime('%Y', data_inserimento) AS INTEGER)=? 
+            AND LOWER(strftime('%m', data_inserimento))=?
+        """, (uid, anno, f"{mesi.index(m)+1:02d}")).fetchone()[0] or 0.0
 
-        spese = spese_fisse + stipendi + fatture
+        # 5. Tasse (da tasse + ente)
+        tasse = db.execute("""
+            SELECT COALESCE(SUM(t.importo), 0)
+            FROM tasse t
+            JOIN ente e ON t.ente_id = e.id AND e.user_id = t.user_id
+            WHERE t.user_id = ?
+            AND CAST(strftime('%Y', t.data_inserimento) AS INTEGER) = ?
+            AND CAST(strftime('%m', t.data_inserimento) AS INTEGER) = ?
+        """, (uid, anno, mesi.index(m) + 1)).fetchone()[0] or 0.0
+
+        # Totale spese
+        spese = round(spese_fisse + stipendi + fatture + tasse, 2)
         ricavo = inc - spese
         perc = (ricavo / inc * 100.0) if inc else 0.0
 
@@ -4570,7 +4676,7 @@ def api_annuale(anno):
             "incidenza": round(tot_incidenza, 2)
         }
     })
-
+    
 # Redirect da /report verso /situazione-annuale
 @app.route("/report")
 @require_login

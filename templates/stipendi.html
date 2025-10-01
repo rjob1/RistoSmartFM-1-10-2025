@@ -146,6 +146,17 @@
 {% block scripts %}
 
 <script>
+// === DATI INIZIALI DAL SERVER ===
+window.INITIAL_YEAR = {{ anno }};
+window.INITIAL_STIPENDI = {{ stipendi_data | tojson }};
+
+// Funzione ausiliaria per debug (opzionale)
+function log(msg, data) {
+  console.log(`[Stipendi] ${msg}`, data || '');
+}
+</script>
+
+<script>
 /* --- CSRF helper + fetch wrapper --- */
 (function () {
   if (window.csrfFetch) return;
@@ -743,49 +754,81 @@ async function fetchStipendiServer() {
 }
 
 async function init() {
-  loadData();
+  let initialData = null;
+
+  // 1. Prova dai dati del server (Jinja2)
+  if (window.INITIAL_STIPENDI && Object.keys(window.INITIAL_STIPENDI).length > 0) {
+    initialData = window.INITIAL_STIPENDI;
+    log("Caricati dati iniziali da Jinja2", initialData);
+  }
+  // 2. Altrimenti prova da localStorage
+  else {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        initialData = JSON.parse(stored);
+        log("Caricati dati iniziali da localStorage");
+      }
+    } catch (e) {
+      console.warn("Errore parsing localStorage:", e);
+    }
+  }
+
+  // 3. Carica anagrafica personale
   personale = await fetchPersonale();
-  const serverData = await fetchStipendiServer(); // /api/stipendi/dettaglio/<anno>
-  const yearKey = String(annoCorrente);
 
-  stipendiData[yearKey] = stipendiData[yearKey] || {};
+  // 4. Prepara stipendiData
+  stipendiData[String(annoCorrente)] = {};
 
-  // ✅ usa rec.mesi, non l'oggetto intero
-  Object.entries(serverData).forEach(([empId, rec]) => {
-    const existing = stipendiData[yearKey][empId] || {
-      id: parseInt(empId, 10),
-      nome: rec.nome || "",
-      ruolo: rec.ruolo || "",
-      mesi: {}
-    };
+  if (initialData) {
+    // Usa i dati iniziali (da server o localStorage)
+    Object.entries(initialData).forEach(([empId, rec]) => {
+      const existing = {
+        id: parseInt(empId, 10),
+        nome: rec.nome || "",
+        ruolo: rec.ruolo || "",
+        mesi: {}
+      };
 
-    // sincronizza anagrafica
-    existing.nome = rec.nome || existing.nome || "";
-    existing.ruolo = rec.ruolo || existing.ruolo || "";
+      // Normalizza i mesi
+      Object.entries(rec.mesi || {}).forEach(([slug, values]) => {
+        existing.mesi[slug] = normalizeMonth(values);
+      });
 
-    // carica i mesi corretti
-    const mesiServer = rec.mesi || {};
-    Object.entries(mesiServer).forEach(([slug, values]) => {
-      existing.mesi[slug] = normalizeMonth(values);
+      // Assicura tutti i mesi
+      AVAILABLE_MONTHS.forEach(({ slug }) => {
+        existing.mesi[slug] = normalizeMonth(existing.mesi[slug]);
+      });
+
+      stipendiData[String(annoCorrente)][empId] = existing;
     });
+  }
 
-    // assicura tutti i mesi presenti anche se mancanti sul server
-    AVAILABLE_MONTHS.forEach(({ slug }) => {
-      existing.mesi[slug] = normalizeMonth(existing.mesi[slug]);
+  // 5. Sovrascrivi con i dati freschi dal server (se disponibili)
+  try {
+    const freshData = await fetchStipendiServer();
+    Object.entries(freshData).forEach(([empId, rec]) => {
+      const target = stipendiData[String(annoCorrente)][empId];
+      if (target) {
+        Object.entries(rec.mesi || {}).forEach(([slug, values]) => {
+          target.mesi[slug] = normalizeMonth(values);
+        });
+      }
     });
+    log("Dati aggiornati con risposta API /dettaglio");
+  } catch (err) {
+    console.warn("⚠️ API dettaglio fallita, uso dati locali", err);
+  }
 
-    stipendiData[yearKey][empId] = existing;
-  });
-
+  // 6. Pulizia finale e render
   pruneRecords(personale);
   render(personale);
   readyForSync = true;
+
+  // 7. Salva su localStorage per prossime volte
   saveData({ trigger: false });
 }
-
 init();
-
-
 
 </script>
 
